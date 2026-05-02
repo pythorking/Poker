@@ -84,7 +84,6 @@ html,body { width:100%; height:100%; overflow:hidden;
 #table::before { content:''; position:absolute; inset:5%; border-radius:50%; border:1px solid rgba(255,255,255,.06); }
 
 /* ── TURN RING ── */
-/* One invisible ring per seat, shown via JS */
 .turn-ring {
   position:absolute;
   border-radius:50%;
@@ -92,7 +91,7 @@ html,body { width:100%; height:100%; overflow:hidden;
   box-shadow:0 0 14px var(--gold), 0 0 4px var(--gold-light);
   animation:ringPulse 1s ease-in-out infinite;
   pointer-events:none;
-  display:none; /* shown by JS */
+  display:none;
   transform:translate(-50%,-50%);
 }
 @keyframes ringPulse {
@@ -359,13 +358,15 @@ html,body { width:100%; height:100%; overflow:hidden;
 
 <script>
 /* ================================================================
-   ROYAL FLUSH POKER — Full Texas Hold'em
-   Improvements: ALL IN button, dealer rotation, better bot AI
+   ROYAL FLUSH POKER — Full Texas Hold'em with Proper Betting
+   - Dealer rotates randomly at start
+   - All In button works
+   - Betting loops back correctly when bots raise
    ================================================================ */
 
 const BOT_NAMES  = ['Viktor','Mei Ling','Duke','Scarlett','Marco'];
 const BOT_STYLES = ['aggressive','cautious','bluffer','balanced','maniac'];
-const BOT_ANGLES = [0, 48, 130, 230, 312]; // degrees around oval, 0=top
+const BOT_ANGLES = [0, 48, 130, 230, 312];
 
 /* ── DIFFICULTY ─────────────────────────────────────────────── */
 const DIFF_SETTINGS = {
@@ -591,24 +592,17 @@ function botDec(bot, curBet, playerChecked) {
 
   let hs = estHS(bot.hand);
 
-  // If player checked and no aggressive bet on table, most bots check
+  // If player checked and no bet on table, most bots check
   if (curBet === 0) {
     if (difficulty !== 'hard') return 'check';
-    // Hard mode: occasionally open a raise with strong hands
     if (hs > 0.70 && Math.random() < 0.25) return 'raise';
     return 'check';
   }
 
   // There IS a bet to respond to
-  // Bluffer occasionally bluffs
   if (bot.style==='bluffer' && Math.random() < ds.bluffChance) return 'raise';
 
-  // Evaluate hand strength vs thresholds
   if (hs < fT)  return 'fold';
-  
-  // Check if bot wants to check (rare with active bet, unless weak)
-  if (hs < cT && Math.random() < 0.15 && curBet <= 20) return 'check';
-  
   if (hs > rT)  return 'raise';
   return 'call';
 }
@@ -626,7 +620,7 @@ let G = {
   deck:[], pH:[], bots:[], com:[],
   pot:0, stage:0, curBet:20,
   pChips:500, pBet:0, dIdx:0, pFolded:false,
-  playerChecked:false
+  playerChecked:false, roundRaised:false
 };
 
 /* ── START GAME ─────────────────────────────────────────────── */
@@ -649,7 +643,7 @@ function startGame(){
 function deal(){
   if(G.pChips<=0){setMsg('No chips! Reloading...');setTimeout(()=>location.reload(),2e3);return;}
   G.deck=shuffle(mkDeck());G.com=[];G.pot=0;G.stage=0;
-  G.pFolded=false;G.pBet=0;G.curBet=20;G.playerChecked=false;
+  G.pFolded=false;G.pBet=0;G.curBet=20;G.playerChecked=false;G.roundRaised=false;
   G.bots.forEach(b=>{b.folded=false;b.bet=0;if(b.chips<=0)b.chips=500;});
   for(let i=0;i<5;i++){el('av-'+i).classList.remove('folded');el('bl-'+i).textContent='';}
   
@@ -663,7 +657,7 @@ function deal(){
   
   renderAll();updPot();setStg('PRE-FLOP');setBD();
   setMsg(BOT_NAMES[sb]+' SB · '+BOT_NAMES[bb]+' BB · Your action!');
-  showTurnRing(5); // player's turn first
+  showTurnRing(5);
   setBtns(true);el('btn-deal').disabled=true;
 }
 
@@ -672,7 +666,7 @@ function pCall(){
   let tc=Math.min(G.curBet-G.pBet,G.pChips);
   G.pChips-=tc;G.pBet+=tc;G.pot+=tc;
   G.playerChecked=false;
-  updChips();updPot();setMsg('You called.');setBtns(false);showTurnRing(-1);
+  updChips();updPot();setMsg('You called '+tc+'.');setBtns(false);showTurnRing(-1);
   runBots(false);
 }
 
@@ -687,8 +681,9 @@ function pRaise(){
   let a = parseInt(el('raise-amount').value) || minRaise;
   a = Math.max(a, minRaise);
   a = Math.min(a, G.pChips);
-  G.pChips-=a;G.pBet+=a;G.pot+=a;G.curBet=G.pBet;
-  G.playerChecked=false;
+  let actualBet = a - (G.pBet - G.curBet);
+  G.pChips-=actualBet;G.pBet+=actualBet;G.pot+=actualBet;G.curBet=G.pBet;
+  G.playerChecked=false;G.roundRaised=true;
   updChips();updPot();setBD();setMsg('You raised to '+G.pBet+'.');setBtns(false);showTurnRing(-1);
   runBots(false);
 }
@@ -700,6 +695,7 @@ function pAllIn(){
   G.curBet = Math.max(G.curBet, G.pBet);
   G.pChips = 0;
   G.playerChecked = false;
+  G.roundRaised = true;
   updChips();updPot();setBD();
   setMsg('You went ALL IN!');setBtns(false);showTurnRing(-1);
   runBots(false);
@@ -716,6 +712,10 @@ function pFold(){
 function runBots(playerChecked){
   let active = G.bots.filter(b=>!b.folded);
   if(!active.length){setTimeout(()=>advance(),400);return;}
+  
+  // Track if any bot raised this round
+  let botRaisedThisRound = false;
+  
   let d=0;
   active.forEach((bot,idx)=>{
     d += 700;
@@ -743,12 +743,26 @@ function runBots(playerChecked){
           G.curBet=Math.max(G.curBet,bot.bet);
           bub(ri,'RAISE '+raiseAmt);updPot();setBD();
           playerChecked=false;
+          botRaisedThisRound=true;
         }
       }
       updChips();
 
       if(idx===active.length-1){
-        setTimeout(()=>{showTurnRing(-1);advance();},680);
+        setTimeout(()=>{
+          showTurnRing(-1);
+          // If a bot raised, loop back to player; otherwise advance
+          if(botRaisedThisRound && !G.pFolded){
+            G.roundRaised=true;
+            // Reset player's bet for this new raise
+            G.pBet = 0;
+            setBtns(true);
+            showTurnRing(5);
+            setMsg('Bot raised! Your turn.');
+          } else {
+            advance();
+          }
+        },680);
       }
     }, d);
   });
@@ -758,7 +772,7 @@ function runBots(playerChecked){
 function advance(){
   G.stage++;
   G.bots.forEach(b=>b.bet=0);
-  G.pBet=0; G.curBet=0; G.playerChecked=false;
+  G.pBet=0; G.curBet=0; G.playerChecked=false;G.roundRaised=false;
   setBD();
   const go=()=>{
     if(!G.pFolded){
@@ -853,11 +867,11 @@ function setBtns(on){
   el('btn-allin').disabled=!on;
   
   if(on){
+    let tc = G.curBet - G.pBet;
     let minR = G.curBet>0 ? G.curBet*2 : 20;
     el('raise-amount').min = minR;
     if(parseInt(el('raise-amount').value) < minR) el('raise-amount').value = minR;
 
-    let tc = G.curBet - G.pBet;
     if(tc > 0){
       el('btn-call').disabled=false;
       el('btn-check').disabled=true;
