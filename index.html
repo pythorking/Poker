@@ -199,6 +199,7 @@ html,body { width:100%; height:100%; overflow:hidden;
 .btn-raise { background:linear-gradient(135deg,#1a50cc,#2266ff); color:white; }
 .btn-fold  { background:linear-gradient(135deg,#8c1a1a,#cc2222); color:white; }
 .btn-check { background:linear-gradient(135deg,#555,#888); color:white; }
+.btn-allin { background:linear-gradient(135deg,#cc6600,#ff9933); color:white; }
 .btn:disabled{opacity:.28;cursor:not-allowed;transform:none!important;box-shadow:none!important;}
 #raise-amount {
   width:clamp(52px,8vw,68px); padding:clamp(9px,1.8vh,13px) 6px; border-radius:8px;
@@ -351,6 +352,7 @@ html,body { width:100%; height:100%; overflow:hidden;
     <button class="btn btn-check" id="btn-check" onclick="pCheck()" disabled>CHECK</button>
     <input  type="number" id="raise-amount" value="40" min="20" max="500" step="10">
     <button class="btn btn-raise" id="btn-raise" onclick="pRaise()" disabled>RAISE</button>
+    <button class="btn btn-allin" id="btn-allin" onclick="pAllIn()" disabled>ALL IN</button>
     <button class="btn btn-fold"  id="btn-fold"  onclick="pFold()"  disabled>FOLD</button>
   </div>
 </div>
@@ -358,7 +360,7 @@ html,body { width:100%; height:100%; overflow:hidden;
 <script>
 /* ================================================================
    ROYAL FLUSH POKER — Full Texas Hold'em
-   Fixes: difficulty levels, turn ring, check bug, bots respect check
+   Improvements: ALL IN button, dealer rotation, better bot AI
    ================================================================ */
 
 const BOT_NAMES  = ['Viktor','Mei Ling','Duke','Scarlett','Marco'];
@@ -366,14 +368,10 @@ const BOT_STYLES = ['aggressive','cautious','bluffer','balanced','maniac'];
 const BOT_ANGLES = [0, 48, 130, 230, 312]; // degrees around oval, 0=top
 
 /* ── DIFFICULTY ─────────────────────────────────────────────── */
-// Difficulty controls bot aggression thresholds
-// Easy:   bots fold a lot, rarely raise, make mistakes
-// Medium: balanced play
-// Hard:   bots are sharp, rarely fold, often raise
 const DIFF_SETTINGS = {
-  easy:   { foldMult: 2.2,  raiseMult: 0.4,  bluffChance: 0.04 },
-  medium: { foldMult: 1.0,  raiseMult: 1.0,  bluffChance: 0.12 },
-  hard:   { foldMult: 0.4,  raiseMult: 1.8,  bluffChance: 0.22 },
+  easy:   { foldMult: 2.2,  raiseMult: 0.4,  bluffChance: 0.04, checkMult: 1.8 },
+  medium: { foldMult: 1.0,  raiseMult: 1.0,  bluffChance: 0.12, checkMult: 1.0 },
+  hard:   { foldMult: 0.4,  raiseMult: 1.8,  bluffChance: 0.22, checkMult: 0.3 },
 };
 let difficulty = 'easy';
 
@@ -407,8 +405,7 @@ function calcSizes() {
   return S;
 }
 
-// Store seat positions for turn-ring placement
-let seatPos = []; // [{x,y}, ...] indices 0-4=bots, 5=player
+let seatPos = [];
 
 function applyLayout() {
   calcSizes();
@@ -418,23 +415,19 @@ function applyLayout() {
   el('table').style.boxShadow =
     `0 0 0 ${S.rail1}px var(--wood),0 0 0 ${S.rail2}px var(--wood-dark),0 30px 70px rgba(0,0,0,.9),inset 0 0 50px rgba(0,0,0,.4)`;
 
-  // Avatar sizes
   document.querySelectorAll('.avatar-wrap .avatar').forEach(a => {
     a.style.width = a.style.height = S.botAvi+'px';
   });
   el('player-avi').style.width = el('player-avi').style.height = S.pAvi+'px';
 
-  // Card sizes — bot
   document.querySelectorAll('.bot-cards .card').forEach(c => {
     c.style.width = S.botCardW+'px'; c.style.height = S.botCardH+'px';
     c.style.fontSize = S.botCardW*0.55+'px';
   });
-  // Card sizes — player
   document.querySelectorAll('#player-cards .card').forEach(c => {
     c.style.width = S.cardW+'px'; c.style.height = S.cardH+'px';
     c.style.fontSize = S.cardW*0.55+'px';
   });
-  // Card sizes — community
   document.querySelectorAll('#community-cards .card').forEach(c => {
     c.style.width = S.cardW*0.9+'px'; c.style.height = S.cardH*0.9+'px';
     c.style.fontSize = S.cardW*0.5+'px';
@@ -443,7 +436,6 @@ function applyLayout() {
   const cx = S.tw/2, cy = S.th/2;
   seatPos = [];
 
-  // Bot seats
   BOT_ANGLES.forEach((deg, i) => {
     const rad = (deg - 90) * Math.PI / 180;
     const x = cx + S.rx*0.82*Math.cos(rad);
@@ -454,14 +446,12 @@ function applyLayout() {
     seat.style.transform = 'translate(-50%,-50%)';
   });
 
-  // Player seat (bottom centre)
   const px = S.tw/2, py = S.th + S.cardH*0.5 + 20;
-  seatPos.push({x: px, y: py}); // index 5
+  seatPos.push({x: px, y: py});
   const pa = el('player-area');
   pa.style.left   = px+'px';
   pa.style.bottom = (-S.cardH*0.78)+'px';
 
-  // Position turn rings at same coords
   for(let i=0;i<=5;i++){
     const r = el('ring-'+i);
     const sz = (i===5 ? S.pAvi : S.botAvi) + 8;
@@ -469,16 +459,13 @@ function applyLayout() {
     r.style.height = sz+'px';
     r.style.left   = seatPos[i].x+'px';
     r.style.top    = seatPos[i].y+'px';
-    // for player ring adjust to avatar position
     if(i===5){
-      // player avatar is inside player-info-bar, approximate position
       r.style.top = (S.th + S.cardH*0.55 + S.pAvi*0.1 + 28)+'px';
     }
   }
 }
 
 function showTurnRing(seatIdx) {
-  // seatIdx: 0-4 = bots, 5 = player
   for(let i=0;i<=5;i++) el('ring-'+i).style.display='none';
   if(seatIdx >= 0) el('ring-'+seatIdx).style.display='block';
 }
@@ -581,40 +568,47 @@ function eval5(cs){
 }
 
 /* ── BOT AI ─────────────────────────────────────────────────── */
-// KEY FIX: bots only raise/call if there IS a bet on the table (curBet > 0)
-// When player checks (curBet===0), bots can only check — they never open a bet
-// unless difficulty is Hard and they choose to open with a raise
 function botDec(bot, curBet, playerChecked) {
   const ds = DIFF_SETTINGS[difficulty];
-  let fT, rT;
+  let fT, rT, cT;
+  
   switch(bot.style){
-    case'aggressive': fT=0.15*ds.foldMult; rT=0.35*ds.raiseMult; break;
-    case'cautious':   fT=0.30*ds.foldMult; rT=0.15*ds.raiseMult; break;
-    case'bluffer':    fT=0.10*ds.foldMult; rT=0.40*ds.raiseMult; break;
-    case'maniac':     fT=0.05*ds.foldMult; rT=0.60*ds.raiseMult; break;
-    default:          fT=0.20*ds.foldMult; rT=0.25*ds.raiseMult;
+    case'aggressive': 
+      fT=0.15*ds.foldMult; rT=0.35*ds.raiseMult; cT=0.55*ds.checkMult; break;
+    case'cautious':   
+      fT=0.30*ds.foldMult; rT=0.15*ds.raiseMult; cT=0.70*ds.checkMult; break;
+    case'bluffer':    
+      fT=0.10*ds.foldMult; rT=0.40*ds.raiseMult; cT=0.50*ds.checkMult; break;
+    case'maniac':     
+      fT=0.05*ds.foldMult; rT=0.60*ds.raiseMult; cT=0.40*ds.checkMult; break;
+    default:          
+      fT=0.20*ds.foldMult; rT=0.25*ds.raiseMult; cT=0.60*ds.checkMult;
   }
-  // Clamp thresholds to sensible range
-  fT = Math.min(fT, 0.6); rT = Math.min(rT, 0.9);
+  
+  fT = Math.min(fT, 0.6); 
+  rT = Math.min(rT, 0.9);
+  cT = Math.min(cT, 0.8);
 
   let hs = estHS(bot.hand);
 
-  // If player checked (no bet on table), bots ALWAYS check — UNLESS it's Hard
-  // difficulty and they want to open the betting (rare)
+  // If player checked and no aggressive bet on table, most bots check
   if (curBet === 0) {
-    // Easy/Medium: always check when player checked
-    // Hard: small chance to open a raise
     if (difficulty !== 'hard') return 'check';
-    // Hard mode: only open a raise if hand is very strong
-    if (hs > 0.70 && Math.random() < 0.30) return 'raise';
+    // Hard mode: occasionally open a raise with strong hands
+    if (hs > 0.70 && Math.random() < 0.25) return 'raise';
     return 'check';
   }
 
   // There IS a bet to respond to
-  // Bluffer occasionally bluffs regardless of hand
+  // Bluffer occasionally bluffs
   if (bot.style==='bluffer' && Math.random() < ds.bluffChance) return 'raise';
 
+  // Evaluate hand strength vs thresholds
   if (hs < fT)  return 'fold';
+  
+  // Check if bot wants to check (rare with active bet, unless weak)
+  if (hs < cT && Math.random() < 0.15 && curBet <= 20) return 'check';
+  
   if (hs > rT)  return 'raise';
   return 'call';
 }
@@ -632,7 +626,7 @@ let G = {
   deck:[], pH:[], bots:[], com:[],
   pot:0, stage:0, curBet:20,
   pChips:500, pBet:0, dIdx:0, pFolded:false,
-  playerChecked:false  // NEW: track if player checked this street
+  playerChecked:false
 };
 
 /* ── START GAME ─────────────────────────────────────────────── */
@@ -646,23 +640,27 @@ function startGame(){
   const diffLabel = {easy:'🟢 EASY',medium:'🟡 MEDIUM',hard:'🔴 HARD'}[difficulty];
   el('diff-badge').textContent = diffLabel;
   G.bots = BOT_NAMES.map((n,i)=>({name:n,style:BOT_STYLES[i],chips:500,hand:[],folded:false,bet:0}));
+  G.dIdx = Math.floor(Math.random() * 5); // Random dealer start
   updChips(); setMsg('Welcome! Press DEAL to begin.');
   applyLayout();
 }
 
-/* ── DEAL ───────────────────────────────────────────────────── */
+/* ── DEAL ───────────────────────────────────────────────── */
 function deal(){
   if(G.pChips<=0){setMsg('No chips! Reloading...');setTimeout(()=>location.reload(),2e3);return;}
   G.deck=shuffle(mkDeck());G.com=[];G.pot=0;G.stage=0;
   G.pFolded=false;G.pBet=0;G.curBet=20;G.playerChecked=false;
   G.bots.forEach(b=>{b.folded=false;b.bet=0;if(b.chips<=0)b.chips=500;});
   for(let i=0;i<5;i++){el('av-'+i).classList.remove('folded');el('bl-'+i).textContent='';}
+  
   G.pH=[draw(G.deck),draw(G.deck)];
   G.bots.forEach(b=>b.hand=[draw(G.deck),draw(G.deck)]);
+  
   let sb=G.dIdx%5,bb=(G.dIdx+1)%5;
   G.bots[sb].chips-=10;G.bots[sb].bet=10;G.pot+=10;
   G.bots[bb].chips-=20;G.bots[bb].bet=20;G.pot+=20;
   el('bl-'+sb).textContent='SB';el('bl-'+bb).textContent='BB';
+  
   renderAll();updPot();setStg('PRE-FLOP');setBD();
   setMsg(BOT_NAMES[sb]+' SB · '+BOT_NAMES[bb]+' BB · Your action!');
   showTurnRing(5); // player's turn first
@@ -679,14 +677,12 @@ function pCall(){
 }
 
 function pCheck(){
-  // FIX: check means curBet stays 0, bots must also check
   G.playerChecked=true;
   setMsg('You checked.');setBtns(false);showTurnRing(-1);
-  runBots(true); // pass playerChecked=true so bots only check
+  runBots(true);
 }
 
 function pRaise(){
-  // FIX: minimum raise is at least 20 chips; if curBet is 0, raise starts from scratch
   let minRaise = G.curBet > 0 ? G.curBet * 2 : 20;
   let a = parseInt(el('raise-amount').value) || minRaise;
   a = Math.max(a, minRaise);
@@ -694,6 +690,18 @@ function pRaise(){
   G.pChips-=a;G.pBet+=a;G.pot+=a;G.curBet=G.pBet;
   G.playerChecked=false;
   updChips();updPot();setBD();setMsg('You raised to '+G.pBet+'.');setBtns(false);showTurnRing(-1);
+  runBots(false);
+}
+
+function pAllIn(){
+  let allIn = G.pChips;
+  G.pot += allIn;
+  G.pBet += allIn;
+  G.curBet = Math.max(G.curBet, G.pBet);
+  G.pChips = 0;
+  G.playerChecked = false;
+  updChips();updPot();setBD();
+  setMsg('You went ALL IN!');setBtns(false);showTurnRing(-1);
   runBots(false);
 }
 
@@ -705,7 +713,6 @@ function pFold(){
 }
 
 /* ── BOT TURNS ──────────────────────────────────────────────── */
-// playerChecked: if true, bots can only check (or raise on Hard)
 function runBots(playerChecked){
   let active = G.bots.filter(b=>!b.folded);
   if(!active.length){setTimeout(()=>advance(),400);return;}
@@ -714,7 +721,7 @@ function runBots(playerChecked){
     d += 700;
     setTimeout(()=>{
       let ri = G.bots.indexOf(bot);
-      showTurnRing(ri); // show ring on this bot's seat
+      showTurnRing(ri);
 
       let dec = botDec(bot, G.curBet, playerChecked);
 
@@ -724,10 +731,9 @@ function runBots(playerChecked){
         bub(ri,'CHECK');
       } else if(dec==='call'){
         let tc=Math.min(G.curBet-bot.bet, bot.chips);
-        if(tc<=0){bub(ri,'CHECK');}  // safety: don't call 0
+        if(tc<=0){bub(ri,'CHECK');}
         else{bot.chips-=tc;bot.bet+=tc;G.pot+=tc;bub(ri,'CALL '+tc);updPot();}
       } else { // raise
-        // Bot opens or re-raises
         let raiseAmt = G.curBet > 0
           ? Math.min(G.curBet*2, bot.chips)
           : Math.min(20, bot.chips);
@@ -736,7 +742,7 @@ function runBots(playerChecked){
           bot.chips-=raiseAmt;bot.bet+=raiseAmt;G.pot+=raiseAmt;
           G.curBet=Math.max(G.curBet,bot.bet);
           bub(ri,'RAISE '+raiseAmt);updPot();setBD();
-          playerChecked=false; // a raise was opened, no longer a check-around
+          playerChecked=false;
         }
       }
       updChips();
@@ -748,7 +754,7 @@ function runBots(playerChecked){
   });
 }
 
-/* ── ADVANCE STAGE ──────────────────────────────────────────── */
+/* ── ADVANCE STAGE ──────────────────────────────────────── */
 function advance(){
   G.stage++;
   G.bots.forEach(b=>b.bet=0);
@@ -756,7 +762,7 @@ function advance(){
   setBD();
   const go=()=>{
     if(!G.pFolded){
-      showTurnRing(5); // back to player
+      showTurnRing(5);
       setBtns(true);
     } else {
       runBots(false);
@@ -802,7 +808,7 @@ function closeWin(){
   G.pot=0;updPot();setStg('PRE-FLOP');setMsg('Press DEAL to start a new round.');
 }
 
-/* ── RENDER ─────────────────────────────────────────────────── */
+/* ── RENDER ─────────────────────────────────────────────── */
 function renderAll(){
   let pc=el('player-cards');pc.innerHTML='';
   G.pH.forEach((c,i)=>pc.appendChild(mkCard(c,false,i*120,S.cardW,S.cardH)));
@@ -833,7 +839,7 @@ function mkCard(card,faceDown,delay,w,h){
   return div;
 }
 
-/* ── UI HELPERS ─────────────────────────────────────────────── */
+/* ── UI HELPERS ─────────────────────────────────────────── */
 const el = id => document.getElementById(id);
 function updChips(){el('player-chips-label').textContent=G.pChips+'🪙';G.bots.forEach((b,i)=>el('ch-'+i).textContent=b.chips+'🪙');}
 function updPot(){el('pot-display').textContent='🪙 POT: '+G.pot;}
@@ -844,7 +850,8 @@ function setMsg(m){el('message-bar').textContent=m;}
 function setBtns(on){
   el('btn-fold').disabled=!on;
   el('btn-raise').disabled=!on;
-  // FIX: update raise input minimum so it never shows 0
+  el('btn-allin').disabled=!on;
+  
   if(on){
     let minR = G.curBet>0 ? G.curBet*2 : 20;
     el('raise-amount').min = minR;
